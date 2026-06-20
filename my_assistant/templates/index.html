@@ -15,34 +15,50 @@
         .message { max-width: 75%; padding: 12px 16px; border-radius: 12px; font-size: 15px; line-height: 1.5; }
         .user-message { background: #e94560; color: white; align-self: flex-end; border-bottom-right-radius: 2px; }
         .bot-message { background: #0f3460; color: #eee; align-self: flex-start; border-bottom-left-radius: 2px; }
+        .bot-image { align-self: flex-start; }
+        .bot-image img { max-width: 400px; border-radius: 12px; margin-top: 4px; }
         .typing { color: #aaa; font-style: italic; font-size: 14px; align-self: flex-start; padding: 8px 16px; }
-        .input-area { padding: 16px; background: #0f3460; display: flex; gap: 10px; }
+        .input-area { padding: 16px; background: #0f3460; display: flex; gap: 10px; align-items: center; }
         input[type=text] { flex: 1; padding: 12px 16px; border-radius: 24px; border: none; background: #1a1a2e; color: #eee; font-size: 15px; outline: none; }
         input[type=text]::placeholder { color: #666; }
         button { padding: 12px 20px; border-radius: 24px; border: none; cursor: pointer; font-size: 14px; font-weight: bold; }
         #send-btn { background: #e94560; color: white; }
         #clear-btn { background: #333; color: #aaa; }
+        #mic-btn { background: #2ecc71; color: white; padding: 12px 16px; font-size: 16px; }
+        #mic-btn.recording { background: #e74c3c; animation: pulse 1s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
         button:hover { opacity: 0.85; }
+        .controls-row { display: flex; gap: 8px; padding: 0 16px 16px 16px; background: #0f3460; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1>Lucky</h1>
-            <p>Your Personal AI Assistant</p>
+            <p>Your Personal AI Assistant · Chat, Voice & Image Generation</p>
         </div>
         <div class="chat-box" id="chat-box">
-            <div class="message bot-message">Hi! I'm Lucky, your personal AI assistant. How can I help you today?</div>
+            <div class="message bot-message">Hi! I'm Lucky. You can type, speak using the mic button, or ask me to generate an image!</div>
         </div>
         <div class="input-area">
-            <input type="text" id="user-input" placeholder="Type your message here..." />
+            <button id="mic-btn">🎤</button>
+            <input type="text" id="user-input" placeholder="Chat or say 'generate an image of...'" />
             <button id="send-btn">Send</button>
-            <button id="clear-btn">Clear</button>
+        </div>
+        <div class="controls-row">
+            <button id="clear-btn">Clear conversation</button>
         </div>
     </div>
+    <audio id="audio-player" style="display:none;"></audio>
     <script>
         const chatBox = document.getElementById("chat-box");
         const userInput = document.getElementById("user-input");
+        const micBtn = document.getElementById("mic-btn");
+        const audioPlayer = document.getElementById("audio-player");
+
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
 
         function addMessage(text, sender) {
             const msg = document.createElement("div");
@@ -52,7 +68,33 @@
             chatBox.scrollTop = chatBox.scrollHeight;
         }
 
-        async function sendMessage() {
+        function addImage(base64) {
+            const wrapper = document.createElement("div");
+            wrapper.classList.add("bot-image");
+            const img = document.createElement("img");
+            img.src = "data:image/png;base64," + base64;
+            wrapper.appendChild(img);
+            chatBox.appendChild(wrapper);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function isImageRequest(message) {
+            const keywords = ["generate", "draw", "create", "make", "paint", "image of", "picture of"];
+            return keywords.some(k => message.toLowerCase().includes(k));
+        }
+
+        async function speakReply(text) {
+            const response = await fetch("/speak", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text })
+            });
+            const blob = await response.blob();
+            audioPlayer.src = URL.createObjectURL(blob);
+            audioPlayer.play();
+        }
+
+        async function sendMessage(fromVoice = false) {
             const message = userInput.value.trim();
             if (!message) return;
             addMessage(message, "user");
@@ -60,7 +102,7 @@
             const typing = document.createElement("div");
             typing.classList.add("typing");
             typing.id = "typing";
-            typing.innerText = "Lucky is typing...";
+            typing.innerText = isImageRequest(message) ? "Lucky is generating image..." : "Lucky is typing...";
             chatBox.appendChild(typing);
             chatBox.scrollTop = chatBox.scrollHeight;
             const response = await fetch("/chat", {
@@ -70,14 +112,68 @@
             });
             const data = await response.json();
             document.getElementById("typing").remove();
-            addMessage(data.reply, "bot");
+            if (data.type === "image") {
+                addImage(data.reply);
+            } else {
+                addMessage(data.reply, "bot");
+                if (fromVoice) {
+                    speakReply(data.reply);
+                }
+            }
         }
 
-        document.getElementById("send-btn").addEventListener("click", sendMessage);
-        userInput.addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
+        document.getElementById("send-btn").addEventListener("click", () => sendMessage(false));
+        userInput.addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(false); });
         document.getElementById("clear-btn").addEventListener("click", async () => {
             await fetch("/clear", { method: "POST" });
             chatBox.innerHTML = '<div class="message bot-message">Conversation cleared! How can I help you?</div>';
+        });
+
+        micBtn.addEventListener("click", async () => {
+            if (!isRecording) {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+                audioChunks = [];
+                mediaRecorder.ondataavailable = e => {
+                    if (e.data.size > 0) audioChunks.push(e.data);
+                };
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+
+                    const formData = new FormData();
+                    formData.append("audio", audioBlob, "recording.webm");
+
+                    const typing = document.createElement("div");
+                    typing.classList.add("typing");
+                    typing.id = "typing";
+                    typing.innerText = "Transcribing your voice...";
+                    chatBox.appendChild(typing);
+                    chatBox.scrollTop = chatBox.scrollHeight;
+
+                    const response = await fetch("/voice-input", {
+                        method: "POST",
+                        body: formData
+                    });
+                    const data = await response.json();
+                    document.getElementById("typing").remove();
+
+                    if (data.text && data.text.trim()) {
+                        userInput.value = data.text;
+                        sendMessage(true);
+                    } else {
+                        addMessage("I didn't catch that — could you try speaking again?", "bot");
+                    }
+                };
+                mediaRecorder.start(100);
+                isRecording = true;
+                micBtn.classList.add("recording");
+                micBtn.innerText = "⏹";
+            } else {
+                mediaRecorder.stop();
+                isRecording = false;
+                micBtn.classList.remove("recording");
+                micBtn.innerText = "🎤";
+            }
         });
     </script>
 </body>

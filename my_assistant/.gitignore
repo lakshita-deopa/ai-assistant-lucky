@@ -4,4 +4,10 @@ __pycache__/
 *.pyc
 *.pyo
 generated_images/
-.antigravity-ide/
+sd_model/
+sd_model_full/
+sd_model_better/
+sd_model_v2/
+*.db
+*.safetensors
+*.bin
